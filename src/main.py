@@ -52,15 +52,18 @@ app.add_middleware(
 )
 
 mode = "test" if len(sys.argv) > 1 and sys.argv[1] == "test" else "live"
-
+http_proxy = config["proxy"].get("http", None)
+https_proxy = config["proxy"].get("https", None)
+print(http_proxy, https_proxy)
 exchange = ccxt.binance(
     {
         "apiKey": config["binance"][mode].get("api_key"),
         "secret": config["binance"][mode].get("secret"),
         "enableRateLimit": True,
+        "options": {"defaultType": config["type"]},
         "proxies": {
-            "http": config["proxy"].get("http", None),
-            "https": config["proxy"].get("https", None),
+            "http": http_proxy,
+            "https": https_proxy,
         },
     }
 )

@@ -1,6 +1,6 @@
 # ccxt-proxy
-  * mkdir ~/data
-  * cd ~/data
+  * mkdir ~/ccxt_proxy
+  * cd ~/ccxt_proxy
   * nano config.json
 
 # uv run
@@ -13,7 +13,6 @@
   * docker-compose up --build
 # Docker Run
   * create file ~/ccxt_proxy/config.json
-  * docker build -t ccxt_proxy .
-  * docker run -d -p 8000:8000 -v ~/ccxt_proxy:/app/data ccxt_proxy
+  * docker run -d -p 4915:8000 -v ~/ccxt_proxy:/app/data -e PYTHONUNBUFFERED=1 --name ccxt-proxy --restart=always hxse/ccxt-proxy:latest`
 # doc
   * [doc.md](doc.md)
