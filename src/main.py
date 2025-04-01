@@ -61,15 +61,15 @@ exchange = ccxt.binance(
         "secret": config["binance"][mode].get("secret"),
         "enableRateLimit": True,
         "options": {"defaultType": config["type"]},
-        # "proxies": {
-        #     "http": http_proxy,
-        #     "https": https_proxy,
-        # },
+        "proxies": {
+            "http": http_proxy,
+            "https": https_proxy,
+        },
         "verbose": True,  # 启用详细日志
     }
 )
-exchange.httpProxy = http_proxy
-exchange.httpsProxy = https_proxy
+exchange.aiohttp_proxy = http_proxy
+
 if mode == "test":
     exchange.set_sandbox_mode(True)
 
