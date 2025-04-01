@@ -45,6 +45,10 @@
     <div class="section">
         <h2>set option</h2>
         <div class="input-group" style="display: flex; align-items: center;">
+            <label for="api_url">api_url:</label>
+            <input type="text" id="api_url" value="http://localhost:8000" style="margin-right: 10px;">
+            <label for="ws_api_url">ws_api_url:</label>
+            <input type="text" id="ws_api_url" value="ws://localhost:8000" style="margin-right: 10px;">
             <label for="token">token:</label>
             <input type="text" id="token" value="" style="margin-right: 10px;">
             <label for="cache">cache:</label>
@@ -97,14 +101,14 @@
     </div>
 
     <script>
-        const apiObj = { API_TOKEN: "", cache: true }
+        const apiObj = { API_TOKEN: "", cache: true, BASE_URL: "", WS_URL: "" }
         function setApiObj() {
             apiObj.API_TOKEN = document.getElementById("token").value
             const checkbox = document.getElementById('cache');
             apiObj.cache = checkbox.checked
+            apiObj.BASE_URL = document.getElementById('api_url').value;
+            apiObj.WS_URL = document.getElementById('ws_api_url').value;
         }
-        const BASE_URL = "http://localhost:8000";
-        const WS_URL = "ws://localhost:8000";
         let ws = null;
 
         // 获取 OHLCV 数据
@@ -113,7 +117,7 @@
             const timeframe = document.getElementById("ohlcv_timeframe").value;
             const since = document.getElementById("ohlcv_since").value;
             const limit = document.getElementById("ohlcv_limit").value;
-            const url = `${BASE_URL}/api/ohlcv?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&since=${since}&limit=${limit}&cache=${apiObj.cache}&token=${apiObj.API_TOKEN}`;
+            const url = `${apiObj.BASE_URL}/api/ohlcv?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&since=${since}&limit=${limit}&cache=${apiObj.cache}&token=${apiObj.API_TOKEN}`;
             try {
                 const response = await fetch(url);
                 const data = await response.json();
@@ -126,7 +130,7 @@
         // 获取最新价格 (RESTful)
         async function fetchTicker() {
             const symbol = document.getElementById("ticker_symbol").value;
-            const url = `${BASE_URL}/api/ticker?symbol=${encodeURIComponent(symbol)}&token=${apiObj.API_TOKEN}`;
+            const url = `${apiObj.BASE_URL}/api/ticker?symbol=${encodeURIComponent(symbol)}&token=${apiObj.API_TOKEN}`;
             try {
                 const response = await fetch(url);
                 const data = await response.json();
@@ -138,7 +142,7 @@
 
         function startWebSocket() {
             const symbol = document.getElementById("ws_symbol").value;
-            const url = `${WS_URL}/ws/ticker?symbol=${encodeURIComponent(symbol)}&token=${apiObj.API_TOKEN}`;
+            const url = `${apiObj.WS_URL}/ws/ticker?symbol=${encodeURIComponent(symbol)}&token=${apiObj.API_TOKEN}`;
 
             if (ws) {
                 ws.close();
