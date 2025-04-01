@@ -69,8 +69,8 @@ exchange = ccxt.binance(
     }
 )
 exchange.httpProxy = http_proxy
-exchange.httpsProxy = http_proxy
-exchange.wsProxy = http_proxy
+# exchange.httpsProxy = http_proxy
+# exchange.wsProxy = http_proxy
 
 if mode == "test":
     exchange.set_sandbox_mode(True)
