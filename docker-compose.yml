@@ -1,0 +1,8 @@
+version: '3.8'
+services:
+  ccxt_proxy:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ~/ccxt_proxy:/app/data

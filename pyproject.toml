@@ -1,0 +1,15 @@
+[project]
+name = "ccxt_proxy"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "ccxt",
+    "aiofiles",
+    "pydantic",
+    "websockets",
+]
+
+[tool.uv]
+dev-dependencies = []

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CCXT Proxy Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .section {
+            margin-bottom: 20px;
+        }
+
+        .input-group {
+            margin: 10px 0;
+        }
+
+        label {
+            margin-right: 10px;
+        }
+
+        button {
+            padding: 5px 10px;
+            margin-left: 10px;
+        }
+
+        #output {
+            margin-top: 10px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+    </style>
+</head>
+
+<body>
+    <h1>CCXT Proxy Test</h1>
+    <!-- token -->
+    <div class="section">
+        <h2>set option</h2>
+        <div class="input-group" style="display: flex; align-items: center;">
+            <label for="token">token:</label>
+            <input type="text" id="token" value="" style="margin-right: 10px;">
+            <label for="cache">cache:</label>
+            <input type="checkbox" id="cache" name="cache" style="margin-right: 10px;" checked>
+            <button onclick="setApiObj()">ok</button>
+        </div>
+    </div>
+
+    <!-- OHLCV 测试 -->
+    <div class="section">
+        <h2>Get OHLCV Data</h2>
+        <div class="input-group">
+            <label for="ohlcv_symbol">Symbol:</label>
+            <input type="text" id="ohlcv_symbol" value="BTC/USDT">
+            <label for="ohlcv_timeframe">Timeframe:</label>
+            <input type="text" id="ohlcv_timeframe" value="15m">
+            <label for="ohlcv_since">Since (timestamp):</label>
+            <input type="number" id="ohlcv_since" value="1677657600000">
+            <label for="ohlcv_limit">Limit:</label>
+            <input type="number" id="ohlcv_limit" value="100">
+            <button onclick="fetchOHLCV()">Fetch</button>
+        </div>
+    </div>
+
+    <!-- 最新价格 (RESTful) 测试 -->
+    <div class="section">
+        <h2>Get Latest Price (REST)</h2>
+        <div class="input-group">
+            <label for="ticker_symbol">Symbol:</label>
+            <input type="text" id="ticker_symbol" value="BTC/USDT">
+            <button onclick="fetchTicker()">Fetch</button>
+        </div>
+    </div>
+
+    <!-- WebSocket 实时价格测试 -->
+    <div class="section">
+        <h2>Get Real-Time Price (WebSocket)</h2>
+        <div class="input-group">
+            <label for="ws_symbol">Symbol:</label>
+            <input type="text" id="ws_symbol" value="BTC/USDT">
+            <button onclick="startWebSocket()">Start</button>
+            <button onclick="stopWebSocket()">Stop</button>
+        </div>
+    </div>
+
+    <!-- 输出区域 -->
+    <div class="section">
+        <h2>Output</h2>
+        <div id="output"></div>
+    </div>
+
+    <script>
+        const apiObj = { API_TOKEN: "", cache: true }
+        function setApiObj() {
+            apiObj.API_TOKEN = document.getElementById("token").value
+            const checkbox = document.getElementById('cache');
+            apiObj.cache = checkbox.checked
+        }
+        const BASE_URL = "http://localhost:8000";
+        const WS_URL = "ws://localhost:8000";
+        let ws = null;
+
+        // 获取 OHLCV 数据
+        async function fetchOHLCV() {
+            const symbol = document.getElementById("ohlcv_symbol").value;
+            const timeframe = document.getElementById("ohlcv_timeframe").value;
+            const since = document.getElementById("ohlcv_since").value;
+            const limit = document.getElementById("ohlcv_limit").value;
+            const url = `${BASE_URL}/api/ohlcv?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&since=${since}&limit=${limit}&cache=${apiObj.cache}&token=${apiObj.API_TOKEN}`;
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                displayOutput("OHLCV Data", JSON.stringify(data, null, 2));
+            } catch (error) {
+                displayOutput("OHLCV Error", error.message);
+            }
+        }
+
+        // 获取最新价格 (RESTful)
+        async function fetchTicker() {
+            const symbol = document.getElementById("ticker_symbol").value;
+            const url = `${BASE_URL}/api/ticker?symbol=${encodeURIComponent(symbol)}&token=${apiObj.API_TOKEN}`;
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                displayOutput("Ticker Data", JSON.stringify(data, null, 2));
+            } catch (error) {
+                displayOutput("Ticker Error", error.message);
+            }
+        }
+
+        function startWebSocket() {
+            const symbol = document.getElementById("ws_symbol").value;
+            const url = `${WS_URL}/ws/ticker?symbol=${encodeURIComponent(symbol)}&token=${apiObj.API_TOKEN}`;
+
+            if (ws) {
+                ws.close();
+            }
+            ws = new WebSocket(url);
+
+            ws.onopen = () => displayOutput("WebSocket", "Connected");
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    displayOutput("WebSocket Price", JSON.stringify(data, null, 2));
+                } catch (e) {
+                    displayOutput("WebSocket Parse Error", event.data);
+                }
+            };
+            ws.onerror = (error) => displayOutput("WebSocket Error", "Connection failed");
+            ws.onclose = (event) => {
+                const reason = event.reason || "No reason provided";
+                displayOutput("WebSocket", `Disconnected (Code: ${event.code}, Reason: ${reason})`);
+            };
+        }
+
+        function stopWebSocket() {
+            if (ws) {
+                ws.close();  // 手动关闭
+                ws = null;
+            }
+        }
+
+        // 显示输出
+        function displayOutput(title, message) {
+            const output = document.getElementById("output");
+            const timestamp = new Date().toLocaleTimeString();
+            output.innerHTML += `<p><strong>${timestamp} - ${title}:</strong> ${message}</p>`;
+            output.scrollTop = output.scrollHeight; // 自动滚动到底部
+        }
+    </script>
+</body>
+
+</html>
