@@ -65,7 +65,7 @@ exchange = ccxt.binance(
         #     "http": http_proxy,
         #     "https": https_proxy,
         # },
-        "verbose": True,  # 启用详细日志
+        # "verbose": True,  # 启用详细日志
     }
 )
 exchange.httpProxy = http_proxy
