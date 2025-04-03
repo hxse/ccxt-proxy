@@ -9,6 +9,7 @@ dependencies = [
     "aiofiles",
     "pydantic",
     "websockets",
+    "pandas>=2.2.3",
 ]
 
 [tool.uv]
