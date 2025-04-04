@@ -88,9 +88,15 @@ async def get_ohlcv_data(
     symbol: str,
     timeframe: str,
     since: Optional[int],
-    limit: Union[int, str],  # 保留原始 limit 类型
+    limit: int,
+    done: bool = True,  # 添加 done 参数，默认为 True
 ) -> pd.DataFrame:
-    print(f"正在获取数据: {symbol}, {timeframe}, since={since}, limit={limit}")
+    """
+    done为True,会多请求一根K线,然后再删除最后一根K线,这是为了保证只获取到已完成的K线
+    """
+    print(
+        f"正在获取数据: {symbol}, {timeframe}, since={since}, limit={limit}, done={done}"
+    )
     if not exchange.has["fetchOHLCV"]:
         print(f"交易所 {exchange.id} 不支持 fetchOHLCV。")
         return EMPTY_OHLCV_DF
@@ -104,27 +110,10 @@ async def get_ohlcv_data(
     effective_since = since  # 记录原始 since 以便需要时计算
 
     numerical_limit: int
-    if limit == "all":
-        if effective_since is None:
-            print("警告: limit='all' 且 since=None。将获取默认的大量数据 (例如 1000)。")
-            numerical_limit = 1000  # 默认较大的数量，按需调整
-        else:
-            numerical_limit = math.ceil((now_ms - effective_since) / tf_ms) + 1
-            print(
-                f"计算得到的 'all' limit: 从 {effective_since} 到 {now_ms} 需要 {numerical_limit} 根 K 线"
-            )
-    else:
-        try:
-            numerical_limit = int(limit)
-            if numerical_limit <= 0:
-                print(f"请求的 limit ({limit}) 为非正数。无需获取。")
-                return EMPTY_OHLCV_DF
-        except ValueError:
-            print(f"无效的整数 limit: {limit}。将使用默认值 1000。")
-            numerical_limit = 1000  # 如果转换失败则使用默认 limit
-
-    if numerical_limit <= 0:  # 再次检查以防 'all' 计算出负数 (since > now_ms)
-        print(f"计算出的 limit 为非正数 ({numerical_limit})。无需获取。")
+    requested_limit = int(limit)  # 保存原始请求的 limit
+    numerical_limit = requested_limit + 1 if done else requested_limit
+    if numerical_limit <= 0:
+        print(f"请求的 limit ({limit}) 为非正数。无需获取。")
         return EMPTY_OHLCV_DF
 
     ohlcv_list = []
@@ -218,6 +207,14 @@ async def get_ohlcv_data(
         ohlcv_list, columns=["timestamp", "open", "high", "low", "close", "volume"]
     )
 
+    if done and not df.empty:
+        df = df.iloc[:-1]
+        print("移除了最后一根 K 线，因为 done=True。")
+    if len(df) < requested_limit:
+        print(
+            f"警告: K线返回的数据量 ({len(df)}) 小于请求的 limit ({requested_limit})。"
+        )
+
     try:
         df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce").astype(
             "Int64"
@@ -249,7 +246,7 @@ async def handle_ohlcv_cache(
     symbol: str,
     timeframe: str,
     since: Optional[int],
-    limit: Union[int, str],
+    limit: int,
 ) -> pd.DataFrame:
     tf_ms = TIMEFRAME_MS.get(timeframe)
     if not tf_ms:
@@ -272,12 +269,7 @@ async def handle_ohlcv_cache(
             print(
                 f"由于 since 为 None, limit 为 {limit}, 计算得到的 since: {since} ({datetime.fromtimestamp(since / 1000, timezone.utc)})"
             )
-        elif limit == "all":
-            print(
-                "警告: 'since' 为 None 且 limit 为 'all'。将获取新数据而不进行缓存查找。"
-            )
-            # 'since' 保持 None，get_ohlcv_data 会处理
-        else:  # limit 是无效的字符串或 <= 0 的整数
+        else:  # limit 是无效的或 <= 0
             default_limit = 1000
             print(
                 f"警告: 无效或非正数 limit '{limit}' 且 since=None。计算默认 {default_limit} 根 K 线的 since。"
@@ -305,6 +297,8 @@ async def handle_ohlcv_cache(
 
                     if file_since_ms <= since:
                         valid_files.append((f, file_since_ms))
+                    else:
+                        print(f"跳过名称格式不符合预期的缓存文件: {f.name}")
                 else:
                     print(f"跳过名称格式不符合预期的缓存文件: {f.name}")
             except ValueError:
@@ -340,28 +334,33 @@ async def handle_ohlcv_cache(
                     "timestamp"
                 )
 
-                limit_int = (
-                    int(original_limit)
-                    if isinstance(original_limit, str) and original_limit.isdigit()
-                    else original_limit
-                )
-
-                if isinstance(limit_int, int) and len(df_from_cache) >= limit_int:
-                    print(f"从缓存返回 {limit_int} 行数据，满足请求。")
-                    return df_from_cache.head(limit_int)
-                elif isinstance(limit_int, int) and len(df_from_cache) < limit_int:
+                if (
+                    isinstance(original_limit, int)
+                    and len(df_from_cache) >= original_limit
+                ):
+                    print(f"从缓存返回 {original_limit} 行数据，满足请求。")
+                    df_processed = df_from_cache.head(original_limit).copy()
+                elif (
+                    isinstance(original_limit, int)
+                    and len(df_from_cache) < original_limit
+                ):
                     print(
-                        f"缓存中符合条件的数据不足 {limit_int} 行 ({len(df_from_cache)} 行)。需要获取更多数据。"
+                        f"缓存中符合条件的数据不足 {original_limit} 行 ({len(df_from_cache)} 行)。需要获取更多数据。"
                     )
                     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
                     last_cache_ts = df_from_cache["timestamp"].max()
                     fetch_since = last_cache_ts + tf_ms
-                    remaining_needed = limit_int - len(df_from_cache)
+                    remaining_needed = original_limit - len(df_from_cache)
                     print(f"需要从 {fetch_since} 开始获取 {remaining_needed} 根 K 线。")
 
                     if remaining_needed > 0:
                         df_new = await get_ohlcv_data(
-                            exchange, symbol, timeframe, fetch_since, remaining_needed
+                            exchange,
+                            symbol,
+                            timeframe,
+                            fetch_since,
+                            remaining_needed,
+                            done=True,  # 始终为 True
                         )
                         if not df_new.empty:
                             print(f"成功获取了 {len(df_new)} 根新的 K 线。")
@@ -376,39 +375,51 @@ async def handle_ohlcv_cache(
                             df_processed = (
                                 df_combined[df_combined["timestamp"] >= since]
                                 .sort_values("timestamp")
-                                .head(limit_int)
+                                .head(original_limit)
+                                .copy()
                             )
                             print(f"处理后，返回 {len(df_processed)} 行数据。")
-                            return df_processed
                         else:
-                            print("获取新数据失败，返回已有的缓存数据。")
-                            return df_from_cache.head(limit_int)
+                            print("未获取到新数据，返回已有的缓存数据。")
+                            df_processed = df_from_cache.head(original_limit).copy()
                     else:
                         print("不需要获取更多数据，返回已有的缓存数据。")
-                        return df_from_cache.head(limit_int)
-
-                elif original_limit == "all":
-                    print(f"从缓存返回所有符合条件的数据 (limit='{original_limit}')。")
-                    return df_from_cache
-                elif isinstance(original_limit, str) and original_limit.isdigit():
-                    limit_int = int(original_limit)
-                    print(
-                        f"从缓存返回前 {limit_int} 行数据 (limit='{original_limit}')。"
-                    )
-                    return df_from_cache.head(limit_int)
-                else:
-                    print(
-                        f"警告: 无法识别的 limit 类型: '{original_limit}'。返回所有符合条件的数据。"
-                    )
-                    return df_from_cache
+                        df_processed = df_from_cache.head(original_limit).copy()
 
             elif since > cache_max_ts:
                 gap_ms = since - cache_max_ts
                 print(
                     f"请求的 'since' ({since}) 在缓存结束 ({cache_max_ts}) 之后，存在 {gap_ms / tf_ms:.2f} 个时间周期的间隙。"
                 )
-                # ... (Fallback 逻辑保持不变)
-                pass
+                # 获取从缓存结束到请求开始的新数据
+                fetch_since = cache_max_ts + tf_ms
+                fetch_limit = original_limit  # 假设需要获取 limit 根
+                print(f"尝试获取从 {fetch_since} 开始的新数据，最多 {fetch_limit} 根。")
+                df_new = await get_ohlcv_data(
+                    exchange,
+                    symbol,
+                    timeframe,
+                    fetch_since,
+                    fetch_limit,
+                    done=True,  # 始终为 True
+                )
+                if not df_new.empty:
+                    print(f"成功获取了 {len(df_new)} 根新的 K 线，填补间隙。")
+                    df_combined = pd.concat([df_cache, df_new], ignore_index=True)
+                    df_combined = df_combined.drop_duplicates(
+                        subset="timestamp", keep="first"
+                    ).sort_values("timestamp")
+                    save_ohlcv_to_file(latest_cache_path, df_combined)
+                    print(f"缓存文件 {latest_cache_path} 已更新，填补了间隙。")
+                    df_processed = (
+                        df_combined[df_combined["timestamp"] >= since]
+                        .head(original_limit)
+                        .copy()
+                    )
+                else:
+                    print("获取填补间隙的新数据失败，返回已有的缓存数据。")
+                    df_processed = df_cache.head(original_limit).copy()
+
             elif since < cache_min_ts:
                 print(
                     f"请求的 'since' ({since}) 早于缓存开始时间 ({cache_min_ts})。将不使用此缓存，获取全新数据。"
@@ -425,7 +436,12 @@ async def handle_ohlcv_cache(
             f"执行 Fallback 逻辑：获取全新数据。请求 since={since}, limit={original_limit}"
         )
         df_new = await get_ohlcv_data(
-            exchange, symbol, timeframe, since, original_limit
+            exchange,
+            symbol,
+            timeframe,
+            since,
+            original_limit,
+            done=True,  # 始终为 True
         )
 
         if not df_new.empty:
@@ -455,27 +471,76 @@ async def handle_ohlcv_cache(
                 print(f"将新获取的数据保存到新缓存文件: {new_cache_file}")
                 save_ohlcv_to_file(new_cache_file, df_new)
 
-            df_processed = df_new  # 最终结果是新获取的数据
+            df_processed = df_new.copy()
         else:
             print("Fallback 获取新数据也失败或返回空，返回空 DataFrame。")
             df_processed = EMPTY_OHLCV_DF
 
-    # 最终返回前再次确认 limit
-    limit_int_final = (
-        int(original_limit)
-        if isinstance(original_limit, str) and original_limit.isdigit()
-        else original_limit
-    )
-    if (
-        isinstance(limit_int_final, int)
-        and limit_int_final > 0
-        and not df_processed.empty
-    ):
-        if len(df_processed) > limit_int_final:
-            print(
-                f"最终返回前检查：数据行数 {len(df_processed)} > 请求 limit {limit_int_final}，执行截断。"
-            )
-            df_processed = df_processed.head(limit_int_final)
+    # 最终返回
+    if not df_processed.empty:
+        df_processed = df_processed.head(original_limit).copy()
 
-    print(f"===> 最终返回 {len(df_processed)} 行数据。")
+    print(f"===> 最终返回 {len(df_processed)} 行数据 (来自缓存，始终为已完成)。")
     return df_processed
+
+
+# --- 合并数据,包含最新的未完成 K 线 ---
+async def merge_ohlcv_latest(
+    mode: str,
+    exchange: ccxt.Exchange,
+    symbol: str,
+    timeframe: str,
+    since: Optional[int],
+    limit: int,
+    done: bool,  # 接收路由中的 done 参数
+) -> pd.DataFrame:
+    print(
+        f"处理缓存并附加最新 K 线: {symbol}, {timeframe}, since={since}, limit={limit}, done={done}"
+    )
+    # 先获取缓存中的已完成 K 线
+    cached_df = await handle_ohlcv_cache(
+        mode, exchange, symbol, timeframe, since, limit
+    )
+
+    if cached_df.empty:
+        raise Exception(
+            "尝试合并最新 K 线时，缓存数据为空。请检查缓存配置和数据获取流程。"
+        )
+
+    if done:
+        print("请求已完成的 K 线，直接返回缓存数据。")
+        return cached_df
+
+    if len(cached_df) >= limit:
+        print(f"缓存数据已达到或超过请求的 limit ({limit})，无需额外请求。")
+        return cached_df
+
+    last_cached_timestamp = int(cached_df["timestamp"].iloc[-1])
+    fetch_since = last_cached_timestamp  # 移除多余的 timeframe 增加
+    print(
+        f"请求包含未完成的最新 K 线，尝试从交易所获取最近的 2 根 K 线，起始时间戳: {fetch_since}"
+    )
+    latest_df = await get_ohlcv_data(
+        exchange, symbol, timeframe, since=fetch_since, limit=2, done=False
+    )
+
+    if not latest_df.empty:
+        print(
+            f"成功获取到最新的 {len(latest_df)} 根 K 线，最后一条时间戳: {latest_df['timestamp'].iloc[-1]}"
+        )
+        initial_cached_length = len(cached_df)
+        # 合并缓存数据和最新的 K 线，去除重复项（以最新的为准）
+        combined_df = pd.concat([cached_df, latest_df], ignore_index=True)
+        combined_df = combined_df.drop_duplicates(
+            subset=["timestamp"], keep="last"
+        ).sort_values("timestamp")
+        final_length = len(combined_df)
+        added_count = final_length - initial_cached_length
+        if added_count > 0:
+            print(f"成功获取并合并了 {added_count} 根新的未完成或更新的 K 线。")
+        else:
+            print("未获取到新的未完成或更新的 K 线。")
+        return combined_df.head(limit)  # 返回限制数量的数据
+    else:
+        print("获取最新的 K 线失败，返回缓存数据。")
+        return cached_df.head(limit)  # 返回限制数量的数据

@@ -166,11 +166,6 @@ def parse_since(since: Optional[Union[str, int]]) -> Optional[int]:
 # RESTful API 路由
 @app.get("/hello")
 async def get_hello(token: str = Depends(verify_token)):
-    """
-    - GET /hello?token=your_token
-    一个简单的测试路由，返回 "hello: world"。
-    需要提供有效的 API token 进行身份验证。
-    """
     return {"hello": "world"}
 
 
@@ -180,11 +175,12 @@ async def get_ohlcv(
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - GET /api/ohlcv?symbol=BTC/USDT&timeframe=15m&since=2023-01-01T00:00:00Z&limit=100&cache=true&done=true&token=your_token
-    获取 OHLCV 数据
-    支持 ISO UTC时间戳, 整数时间戳, 2023-01-01T00:00:00Z, 2023-01-01 00:00:00, 1677657600000
+    """获取 OHLCV 数据（支持 ISO UTC时间戳或整数时间戳）
 
+    示例:
+    - GET /api/ohlcv?symbol=BTC/USDT&timeframe=15m&since=2023-01-01T00:00:00Z&limit=100&cache=true&done=true&token=your_token
+    - GET /api/ohlcv?symbol=BTC/USDT&timeframe=15m&since=2023-01-01 00:00:00&limit=100&cache=true&done=true&token=your_token
+    - GET /api/ohlcv?symbol=BTC/USDT&timeframe=15m&since=1677657600000&limit=100&cache=true&done=true&token=your_token
     缓存文件只保存已完成的k线,不保存未完成的k线
     cache=true,并且done=true,直接返回缓存就行,因为缓存中只有已完成的k线
     cache=true,并且done=false,在返回缓存函数后,额外请求最后一根未完成K线,然后合并返回
@@ -235,38 +231,17 @@ async def get_ticker(
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - GET /api/ticker?symbol=BTC/USDT&token=your_token
-    获取指定交易对的最新 ticker 信息（仅返回最新价格）。
-    需要提供有效的 API token 进行身份验证。
-
-    参数:
-    - symbol: 交易对，例如 "BTC/USDT"。
-    """
     ticker = await exchange.fetch_ticker(symbol)
     return {"symbol": symbol, "price": ticker["last"]}
 
 
+# 其他路由保持不变
 @app.post("/api/order")
 async def create_order(
     request: OrderRequest,
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - POST /api/order?token=your_token
-    根据提供的参数创建一个新的订单。
-    支持市价单和限价单，并可同时设置止盈和止损订单。
-    需要提供有效的 API token 进行身份验证。
-
-    请求体 (JSON):
-    - symbol: 交易对，例如 "BTC/USDT"。
-    - side: 订单方向，"buy" 或 "sell"。
-    - amount: 订单数量。
-    - price (可选): 限价单的价格。如果为 None，则创建市价单。
-    - take_profit (可选): 止盈价格。
-    - stop_loss (可选): 止损价格。
-    """
     order_type = "market" if request.price is None else "limit"
     order = await exchange.create_order(
         request.symbol, order_type, request.side, request.amount, request.price
@@ -303,17 +278,6 @@ async def create_stop_order(
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - POST /api/stop_order?token=your_token
-    创建一个止损订单。当市场价格达到触发价格时，会创建一个市价单。
-    需要提供有效的 API token 进行身份验证。
-
-    请求体 (JSON):
-    - symbol: 交易对，例如 "BTC/USDT"。
-    - side: 订单方向，"buy" 或 "sell"。
-    - amount: 订单数量。
-    - trigger_price: 触发价格。当市场价格达到此价格时触发。
-    """
     order = await exchange.create_order(
         request.symbol,
         "stopMarket",
@@ -331,17 +295,6 @@ async def create_trailing_stop(
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - POST /api/trailing_stop?token=your_token
-    创建一个追踪止损订单。止损价格会跟随市场价格波动。
-    需要提供有效的 API token 进行身份验证。
-
-    请求体 (JSON):
-    - symbol: 交易对，例如 "BTC/USDT"。
-    - side: 订单方向，"buy" 或 "sell"。
-    - amount: 订单数量。
-    - distance: 追踪止损的距离。
-    """
     order = await exchange.create_order(
         request.symbol,
         "trailingStop",
@@ -360,15 +313,6 @@ async def cancel_order(
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - POST /api/cancel_order?order_id=YOUR_ORDER_ID&symbol=BTC/USDT&token=your_token
-    取消指定 ID 的订单。
-    需要提供有效的 API token 进行身份验证。
-
-    参数:
-    - order_id (query): 要取消的订单 ID。
-    - symbol (query): 订单所属的交易对，例如 "BTC/USDT"。
-    """
     result = await exchange.cancel_order(order_id, symbol)
     return result
 
@@ -380,15 +324,6 @@ async def fetch_order(
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - GET /api/order?order_id=YOUR_ORDER_ID&symbol=BTC/USDT&token=your_token
-    获取指定 ID 的订单信息。
-    需要提供有效的 API token 进行身份验证。
-
-    参数:
-    - order_id (query): 要查询的订单 ID。
-    - symbol (query): 订单所属的交易对，例如 "BTC/USDT"。
-    """
     order = await exchange.fetch_order(order_id, symbol)
     return order
 
@@ -399,14 +334,6 @@ async def fetch_positions(
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - GET /api/positions?symbol=BTC/USDT&token=your_token (可选 symbol)
-    获取当前持仓信息。可以指定交易对进行查询。
-    需要提供有效的 API token 进行身份验证。
-
-    参数:
-    - symbol (query, 可选): 要查询的交易对，例如 "BTC/USDT"。如果省略，则返回所有持仓。
-    """
     positions = await exchange.fetch_positions(symbol)
     return positions
 
@@ -417,14 +344,6 @@ async def fetch_history_positions(
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - GET /api/history_positions?symbol=BTC/USDT&token=your_token (可选 symbol)
-    获取历史持仓信息（已平仓的持仓）。可以指定交易对进行查询。
-    需要提供有效的 API token 进行身份验证。
-
-    参数:
-    - symbol (query, 可选): 要查询的交易对，例如 "BTC/USDT"。如果省略，则返回所有历史持仓。
-    """
     positions = await exchange.fetch_closed_positions(symbol)
     return positions
 
@@ -435,14 +354,6 @@ async def fetch_open_orders(
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - GET /api/open_orders?symbol=BTC/USDT&token=your_token (可选 symbol)
-    获取当前未成交的订单信息。可以指定交易对进行查询。
-    需要提供有效的 API token 进行身份验证。
-
-    参数:
-    - symbol (query, 可选): 要查询的交易对，例如 "BTC/USDT"。如果省略，则返回所有未成交订单。
-    """
     orders = await exchange.fetch_open_orders(symbol)
     return orders
 
@@ -455,16 +366,6 @@ async def fetch_history_orders(
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - GET /api/history_orders?symbol=BTC/USDT&since=1672531200000&limit=100&token=your_token (可选 since 和 limit)
-    获取历史订单信息（已成交或已取消的订单）。可以指定交易对、起始时间和数量进行查询。
-    需要提供有效的 API token 进行身份验证。
-
-    参数:
-    - symbol (query, 可选): 要查询的交易对，例如 "BTC/USDT"。如果省略，则返回所有历史订单。
-    - since (query, 可选): 起始时间戳（毫秒）。
-    - limit (query, 可选): 返回的订单数量限制。
-    """
     orders = await exchange.fetch_closed_orders(symbol, since, limit)
     return orders
 
@@ -474,11 +375,6 @@ async def fetch_balance(
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - GET /api/balance?token=your_token
-    获取账户余额信息。
-    需要提供有效的 API token 进行身份验证。
-    """
     balance = await exchange.fetch_balance()
     return balance
 
@@ -489,14 +385,6 @@ async def get_leverage(
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - GET /api/leverage?symbol=BTC/USDT&token=your_token
-    获取指定交易对的当前杠杆倍数。
-    需要提供有效的 API token 进行身份验证。
-
-    参数:
-    - symbol (query): 交易对，例如 "BTC/USDT"。
-    """
     leverage = await exchange.fetch_leverage(symbol)
     return {"symbol": symbol, "leverage": leverage}
 
@@ -507,30 +395,12 @@ async def set_leverage(
     token: str = Depends(verify_token),
     exception_handler: None = Depends(handle_exceptions),
 ):
-    """
-    - POST /api/leverage?token=your_token
-    设置指定交易对的杠杆倍数。
-    需要提供有效的 API token 进行身份验证。
-
-    请求体 (JSON):
-    - symbol: 交易对，例如 "BTC/USDT"。
-    - leverage: 要设置的杠杆倍数。
-    """
     result = await exchange.set_leverage(request.leverage, request.symbol)
     return result
 
 
 @app.websocket("/ws/ticker")
 async def websocket_ticker(websocket: WebSocket):
-    """
-    - WebSocket 连接 URL: ws://your_domain:port/ws/ticker?symbol=BTC/USDT&token=your_api_token
-    通过 WebSocket 连接实时推送指定交易对的 ticker 数据。
-    需要在连接 URL 中提供 symbol 和 token 参数。
-
-    参数 (通过 WebSocket 连接 URL 传递):
-    - symbol: 要订阅的交易对，例如 "BTC/USDT"。
-    - token: 您的 API token。
-    """
     await websocket.accept()
     params = websocket.query_params
     symbol = params.get("symbol")

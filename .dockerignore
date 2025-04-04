@@ -1,4 +1,6 @@
 data
+test/*.txt
+
 .gitignore
 .dockerignore
 docker-compose.yml

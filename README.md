@@ -14,5 +14,3 @@
 # Docker Run
   * create file ~/ccxt_proxy/config.json
   * docker run -d -p 4915:8000 -v ~/ccxt_proxy:/app/data -e PYTHONUNBUFFERED=1 --name ccxt-proxy --restart=always hxse/ccxt-proxy:latest`
-# doc
-  * [doc.md](doc.md)
