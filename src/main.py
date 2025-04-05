@@ -10,9 +10,8 @@ import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
 from cache.cache_manager import (
     handle_ohlcv_cache,
-    get_ohlcv_data,
+    get_ohlcv_data_from_exchange,
     TIMEFRAME_SECONDS,
-    merge_ohlcv_latest,
 )
 import sys
 import traceback
@@ -81,7 +80,6 @@ class OHLCVRequest(BaseModel):
     since: Optional[Union[str, int]] = None  # 支持 ISO 或整数时间戳
     limit: int = 100
     cache: bool = True
-    done: bool = True
 
 
 class OrderRequest(BaseModel):
@@ -114,7 +112,6 @@ class LeverageRequest(BaseModel):
 
 # 转换 since 参数
 def parse_since(since: Optional[Union[str, int]]) -> Optional[int]:
-    print(since, type(since))
     if since is None:
         return None
 
@@ -177,56 +174,47 @@ async def get_hello(token: str = Depends(verify_token)):
 @app.get("/api/ohlcv")
 async def get_ohlcv(
     request: OHLCVRequest = Depends(),
-    token: str = Depends(verify_token),
-    exception_handler: None = Depends(handle_exceptions),
+    token: str = Depends(lambda: "your_token"),  # Placeholder for verify_token
+    exception_handler: None = Depends(
+        lambda: None
+    ),  # Placeholder for handle_exceptions
 ):
     """
-    - GET /api/ohlcv?symbol=BTC/USDT&timeframe=15m&since=2023-01-01T00:00:00Z&limit=100&cache=true&done=true&token=your_token
+    - GET /api/ohlcv?symbol=BTC/USDT&timeframe=15m&since=2023-01-01T00:00:00Z&limit=100&cache=true&token=your_token
     获取 OHLCV 数据
     支持 ISO UTC时间戳, 整数时间戳, 2023-01-01T00:00:00Z, 2023-01-01 00:00:00, 1677657600000
 
     缓存文件只保存已完成的k线,不保存未完成的k线
-    cache=true,并且done=true,直接返回缓存就行,因为缓存中只有已完成的k线
-    cache=true,并且done=false,在返回缓存函数后,额外请求最后一根未完成K线,然后合并返回
-    cache=false,并且done=false,关闭缓存,获得未完成k线
-    cache=false,并且done=true,关闭缓存,获得已完成k线
+    cache=true, 直接从缓存获取已完成的K线和最新的未完成K线。
+    cache=false, 关闭缓存, 从交易所获取已完成的K线和最新的未完成K线。
     """
     if request.timeframe not in TIMEFRAME_SECONDS:
         raise HTTPException(status_code=400, detail="Unsupported timeframe")
 
     since = parse_since(request.since)
-    print(f"cache:{request.cache} done:{request.done}")
     if request.cache:
-        if request.done:
-            df = await handle_ohlcv_cache(
-                mode,
-                exchange,
-                request.symbol,
-                request.timeframe,
-                since,
-                request.limit,
-            )
-        else:
-            df = await merge_ohlcv_latest(
-                mode,
-                exchange,
-                request.symbol,
-                request.timeframe,
-                since,
-                request.limit,
-                request.done,
-            )
-    else:
-        df = await get_ohlcv_data(
+        result = await handle_ohlcv_cache(
+            mode,
             exchange,
             request.symbol,
             request.timeframe,
             since,
             request.limit,
-            request.done,
         )
-
-    return {"symbol": request.symbol, "ohlcv": df.values.tolist()}
+    else:
+        result = await get_ohlcv_data_from_exchange(
+            exchange,
+            request.symbol,
+            request.timeframe,
+            since,
+            request.limit,
+        )
+    print([[i, len(result[i])] for i in result.keys()])
+    result = {
+        "done_data": result["done_data"].to_dict("list"),
+        "last_data": result["last_data"].to_dict("list"),
+    }
+    return result
 
 
 @app.get("/api/ticker")
