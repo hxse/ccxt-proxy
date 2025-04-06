@@ -12,6 +12,7 @@ from cache.cache_manager import (
     handle_ohlcv_cache,
     get_ohlcv_data_from_exchange,
     TIMEFRAME_SECONDS,
+    str2datetime,
 )
 import sys
 import traceback
@@ -112,7 +113,7 @@ class LeverageRequest(BaseModel):
 
 # 转换 since 参数
 def parse_since(since: Optional[Union[str, int]]) -> Optional[int]:
-    if since is None:
+    if since is None or since == "":
         return None
 
     if isinstance(since, int):
@@ -125,9 +126,7 @@ def parse_since(since: Optional[Union[str, int]]) -> Optional[int]:
 
         # 尝试解析指定的格式 "YYYY-MM-DD HH:MM:SS" 并假设为 UTC
         try:
-            dt = datetime.strptime(since, "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=timezone.utc
-            )
+            dt = str2datetime(since)
             return int(dt.timestamp() * 1000)
         except ValueError:
             pass  # 如果不匹配，继续尝试其他格式
@@ -181,8 +180,10 @@ async def get_ohlcv(
 ):
     """
     - GET /api/ohlcv?symbol=BTC/USDT&timeframe=15m&since=2023-01-01T00:00:00Z&limit=100&cache=true&token=your_token
-    获取 OHLCV 数据
-    支持 ISO UTC时间戳, 整数时间戳, 2023-01-01T00:00:00Z, 2023-01-01 00:00:00, 1677657600000
+    返回OHLCV数据 {"done_data": { "timestamp": [], "open": [], "high": [], "low": [], "close": [], "volume": [], "date": [] }, "last_data": { "timestamp": [], "open": [], "high": [], "low": [], "close": [], "volume": [], "date": [] }}
+    since支持 ISO UTC时间戳, 整数时间戳
+    2023-01-01T00:00:00Z, 2023-01-01 00:00:00, 1677657600000
+    如果since为None, "", 则根据请求数量自动计算since
 
     缓存文件只保存已完成的k线,不保存未完成的k线
     cache=true, 直接从缓存获取已完成的K线和最新的未完成K线。

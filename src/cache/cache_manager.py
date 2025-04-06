@@ -38,6 +38,63 @@ OHLCV_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume", "date"]
 EMPTY_OHLCV_DF = pd.DataFrame(columns=OHLCV_COLUMNS)
 
 
+def timestamp2str(since):
+    return datetime.fromtimestamp(since / 1000, timezone.utc)
+
+
+def now_timestamp():
+    return datetime.now(timezone.utc).timestamp() * 1000
+
+
+def str2datetime(since):
+    return datetime.strptime(since, "%Y%m%d %H%M%S").replace(tzinfo=timezone.utc)
+
+
+def pd_timestamp2datetime(timestampSeries):
+    return pd.to_datetime(timestampSeries, unit="ms", utc=True).dt.strftime(
+        "%Y-%m-%d %H:%M:%S+00:00"
+    )
+
+
+def calculate_default_since(limit: Optional[int], timeframe: str) -> Optional[int]:
+    """
+    根据 K 线数量和时间周期计算默认的起始时间戳 (since).
+    目标是获取最近的 'limit' 根 K 线，其结束时间点接近当前时间.
+
+    Args:
+        limit: 用户请求的 K 线数量. 如果无效或 <= 0, 会使用默认值.
+        timeframe: 时间周期字符串 (例如 '1h', '1d').
+
+    Returns:
+        计算得到的起始时间戳 (毫秒 UTC), 如果时间周期无效则返回 None.
+    """
+    tf_ms = TIMEFRAME_MS.get(timeframe)
+    if not tf_ms:
+        print(f"错误：未知的时间周期 '{timeframe}', 无法计算默认 since.")
+        return None
+
+    now_ms = int(now_timestamp())
+    calculated_since = None  # 初始化
+
+    effective_limit = limit  # 使用有效值进行计算
+    if not isinstance(limit, int) or limit <= 0:
+        default_limit = 1000  # 使用默认值
+        print(
+            f"警告: 无效或非正数 limit '{limit}' 且 since=None. 使用默认 {default_limit} 根 K 线计算 since."
+        )
+        effective_limit = default_limit  # 继续使用 default_limit 进行后续计算
+
+    # 1. 计算包含当前时间的 K 线的起始时间戳 (向下取整)
+    start_of_current_interval = (now_ms // tf_ms) * tf_ms
+
+    # 2. 以当前 K 线的起始时间为基准，向前推 (limit - 1) 个时间周期，得到请求的起始时间戳
+    #    - 当 limit=1 时, since = start_of_current_interval - (0 * tf_ms) = start_of_current_interval
+    #    - 当 limit=2 时, since = start_of_current_interval - (1 * tf_ms)
+    calculated_since = start_of_current_interval - (effective_limit - 1) * tf_ms
+
+    return calculated_since
+
+
 def _process_ohlcv_dataframe(df_to_process: pd.DataFrame) -> pd.DataFrame:
     """
     处理 OHLCV DataFrame,进行数据类型转换、缺失值处理、去重、排序和添加日期列.
@@ -51,7 +108,7 @@ def _process_ohlcv_dataframe(df_to_process: pd.DataFrame) -> pd.DataFrame:
     # print("开始处理 OHLCV DataFrame...")
     if df_to_process.empty:
         # print("DataFrame 为空,返回空的 DataFrame.")
-        return EMPTY_OHLCV_DF
+        return EMPTY_OHLCV_DF.copy()
     try:
         # print("转换 'timestamp' 列为数值类型并处理缺失值...")
         df_to_process["timestamp"] = pd.to_numeric(
@@ -66,9 +123,7 @@ def _process_ohlcv_dataframe(df_to_process: pd.DataFrame) -> pd.DataFrame:
         ).sort_values("timestamp")
 
         # print("添加 'date' 列...")
-        df_to_process["date"] = pd.to_datetime(
-            df_to_process["timestamp"], unit="ms", utc=True
-        ).dt.strftime("%Y-%m-%d %H:%M:%S+00:00")
+        df_to_process["date"] = pd_timestamp2datetime(df_to_process["timestamp"])
 
         # print("OHLCV DataFrame 处理完成.")
 
@@ -76,7 +131,7 @@ def _process_ohlcv_dataframe(df_to_process: pd.DataFrame) -> pd.DataFrame:
     except Exception as e:
         print(f"处理获取到的 OHLCV 数据时出错: {e}")
         print(traceback.format_exc())
-        return EMPTY_OHLCV_DF
+        return EMPTY_OHLCV_DF.copy()
 
 
 async def get_ohlcv_data_from_exchange(
@@ -136,18 +191,46 @@ async def get_ohlcv_data_from_exchange(
     )
     if not exchange.has["fetchOHLCV"]:
         print(f"警告: 交易所 {exchange.id} 不支持 fetchOHLCV 功能.")
-        return {"done_data": EMPTY_OHLCV_DF, "last_data": EMPTY_OHLCV_DF}
+        return {"done_data": EMPTY_OHLCV_DF.copy(), "last_data": EMPTY_OHLCV_DF.copy()}
 
     tf_ms = TIMEFRAME_MS.get(timeframe)
     if not tf_ms:
         print(f"错误：未知的时间周期 '{timeframe}'")
-        return {"done_data": EMPTY_OHLCV_DF, "last_data": EMPTY_OHLCV_DF}
+        return {"done_data": EMPTY_OHLCV_DF.copy(), "last_data": EMPTY_OHLCV_DF.copy()}
+
+    # 检查 limit (应在尝试计算 since 之前完成)
+    if not isinstance(limit, int) or limit <= 0:
+        print(f"错误: 请求的 K 线数量 limit ({limit}) 必须是正整数.")
+        if since is None:
+            print("错误: limit 无效且 since 为 None, 无法继续.")
+            return {
+                "done_data": EMPTY_OHLCV_DF.copy(),
+                "last_data": EMPTY_OHLCV_DF.copy(),
+            }
+        print(f"错误: limit ({limit}) 无效，无法确定请求数量。")
+        return {"done_data": EMPTY_OHLCV_DF.copy(), "last_data": EMPTY_OHLCV_DF.copy()}
+
+    # 如果 since 为 None，调用工具函数计算 (此时 limit 必定 > 0)
+    if since is None:
+        print(
+            f"get_ohlcv_data_from_exchange: since is None, 调用 calculate_default_since (limit={limit})."
+        )
+        # 使用原始 limit 参数进行计算
+        calculated_since = calculate_default_since(limit, timeframe)
+        if calculated_since is None:  # 理论上 timeframe 已检查
+            print(f"错误: 无法为时间周期 '{timeframe}' 计算默认 since.")
+            return {
+                "done_data": EMPTY_OHLCV_DF.copy(),
+                "last_data": EMPTY_OHLCV_DF.copy(),
+            }
+        since = calculated_since  # 更新 since 变量
+        print(f"get_ohlcv_data_from_exchange: 计算得到的默认 since = {since}")
 
     requested_limit = int(limit)  # 保存原始请求的 limit
     numerical_limit = requested_limit + 1  # 超额请求一根以判断最后一根是否完成
     if numerical_limit <= 0:
         print(f"请求的数量 ({limit}) 为非正数.无需获取.")
-        return {"done_data": EMPTY_OHLCV_DF, "last_data": EMPTY_OHLCV_DF}
+        return {"done_data": EMPTY_OHLCV_DF.copy(), "last_data": EMPTY_OHLCV_DF.copy()}
 
     ohlcv_list = []
     rate_limit = getattr(exchange, "rateLimit", 1000) / 1000  # 秒
@@ -207,29 +290,30 @@ async def get_ohlcv_data_from_exchange(
 
             ohlcv_list.extend(ohlcv)
             actual_fetched_count = len(ohlcv)
-            remaining -= actual_fetched_count
 
-            print(f"本次获取了 {actual_fetched_count} 根 K 线.目标剩余 {remaining} 根.")
+            if actual_fetched_count < fetch_limit:
+                print(
+                    f"  - 本次获取数量 ({actual_fetched_count}) 少于请求数量 ({fetch_limit}),直接结束获取循环请求"
+                )
+                # 即使提前结束，仍然需要更新 remaining，以便后续判断 done/last
+                remaining -= actual_fetched_count
+                break
 
-            if remaining > 0 and actual_fetched_count > 0:
+            if remaining > 0:
+                # 因为 actual_fetched_count >= fetch_limit (否则上面就 break 了), 所以 actual_fetched_count 肯定 > 0
                 last_ts = int(ohlcv[-1][0])
-                # 设置下一次请求的起始时间为本次获取的最后一个 K 线的时间加上一个时间周期
                 current_since = last_ts + tf_ms
                 print(f"等待 {rate_limit:.2f} 秒以遵守速率限制...")
                 await asyncio.sleep(rate_limit)
-            elif actual_fetched_count == 0 and remaining > 0:
-                print("交易所返回空列表,但仍需要数据,提前结束获取.")
-                break
-            else:
-                # print("已达到或超过目标数量,结束获取.")
-                break
 
         except ccxt.NetworkError as e:
-            print(f"获取 OHLCV 时出现 NetworkError: {e}.休眠后重试...")
-            await asyncio.sleep(5)
+            sleep = 5
+            print(f"获取 OHLCV 时出现 NetworkError: {e}.休眠后{sleep}秒重试...")
+            await asyncio.sleep(sleep)
         except ccxt.RateLimitExceeded as e:
-            print(f"获取 OHLCV 时超出速率限制: {e}.将等待更长时间后重试...")
-            await asyncio.sleep(60)
+            sleep = 60
+            print(f"获取 OHLCV 时超出速率限制: {e}.将等待更长时间{sleep}秒后重试...")
+            await asyncio.sleep(sleep)
         except ccxt.ExchangeError as e:
             print(f"获取 OHLCV 时出现 ExchangeError: {e}.中止获取.")
             break
@@ -244,8 +328,8 @@ async def get_ohlcv_data_from_exchange(
         ohlcv_list, columns=["timestamp", "open", "high", "low", "close", "volume"]
     )
 
-    done_data_df = EMPTY_OHLCV_DF
-    last_data_df = EMPTY_OHLCV_DF
+    done_data_df = EMPTY_OHLCV_DF.copy()
+    last_data_df = EMPTY_OHLCV_DF.copy()
 
     if not df.empty:
         returned_count = len(df)
@@ -271,7 +355,6 @@ async def get_ohlcv_data_from_exchange(
     # print("处理从交易所获取的可能未完成的 K 线数据...")
     last_data_df = _process_ohlcv_dataframe(last_data_df)
 
-    print("返回从交易所获取的数据.")
     return {"done_data": done_data_df, "last_data": last_data_df}
 
 
@@ -284,9 +367,7 @@ def save_ohlcv_to_file(file_path: Path, df: pd.DataFrame):
                 df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df.dropna(subset=["open", "high", "low", "close", "volume"])
         if not df.empty:
-            df["date"] = pd.to_datetime(
-                df["timestamp"], unit="ms", utc=True
-            ).dt.strftime("%Y-%m-%d %H:%M:%S+00:00")
+            df["date"] = pd_timestamp2datetime(df["timestamp"])
             print(f"保存 {len(df)} 行数据到 {file_path}...")
             df.to_csv(file_path, index=False, encoding="utf-8")
             print(f"已成功保存 {len(df)} 行到 {file_path} (包含 date 列)")
@@ -300,7 +381,7 @@ def read_ohlcv_from_file(file_path: Path) -> pd.DataFrame:
     # print(f"尝试从文件读取 OHLCV 数据: {file_path}")
     if not file_path.exists():
         print(f"缓存文件未找到: {file_path}")
-        return EMPTY_OHLCV_DF
+        return EMPTY_OHLCV_DF.copy()
     try:
         # print(f"读取 CSV 文件: {file_path}")
         df = pd.read_csv(file_path)
@@ -310,12 +391,10 @@ def read_ohlcv_from_file(file_path: Path) -> pd.DataFrame:
             )
             df = df.dropna(subset=["timestamp"])
             df["timestamp"] = df["timestamp"].astype(int)
-            df["date"] = pd.to_datetime(
-                df["timestamp"], unit="ms", utc=True
-            ).dt.strftime("%Y-%m-%d %H:%M:%S+00:00")
+            df["date"] = pd_timestamp2datetime(df["timestamp"])
         else:
             print(f"警告：缓存文件 {file_path} 缺少 'timestamp' 列.")
-            return EMPTY_OHLCV_DF
+            return EMPTY_OHLCV_DF.copy()
 
         for col in ["open", "high", "low", "close", "volume"]:
             if col in df.columns:
@@ -325,14 +404,14 @@ def read_ohlcv_from_file(file_path: Path) -> pd.DataFrame:
         return df
     except pd.errors.EmptyDataError:
         print(f"缓存文件为空: {file_path}")
-        return EMPTY_OHLCV_DF
+        return EMPTY_OHLCV_DF.copy()
     except Exception as e:
         print(f"读取缓存文件 {file_path} 出错: {e}")
-        return EMPTY_OHLCV_DF
+        return EMPTY_OHLCV_DF.copy()
 
 
 def _check_continuity(df: pd.DataFrame, timeframe: str):
-    print(f"检查 DataFrame 的连续性,时间周期为: {timeframe}")
+    print(f"检查 DataFrame {timeframe} 的连续性,")
     if len(df) < 2:
         print("DataFrame 中少于 2 行,视为连续.")
         return True
@@ -347,23 +426,18 @@ def _check_continuity(df: pd.DataFrame, timeframe: str):
                 f"发现不连续性：时间戳 {timestamps[i + 1]} 和 {timestamps[i]} 之间的间隔不是预期的 {expected_interval} 毫秒."
             )
             return False
-    print("DataFrame 中的时间戳是连续的.")
+    print(f"DataFrame {timeframe} 中的时间戳是连续的.")
     return True
 
 
 def _save_new_data_to_cache(
     df: pd.DataFrame, parent_dir: Path, symbol_norm: str, timeframe: str
 ):
-    print(
-        f"尝试保存新数据到缓存,目录: {parent_dir}, 交易对: {symbol_norm}, 时间周期: {timeframe}"
-    )
     if not df.empty:
         print("检查新数据的连续性...")
         if _check_continuity(df, timeframe):
             new_cache_start_time = df["timestamp"].min()
-            new_cache_start_dt = datetime.fromtimestamp(
-                new_cache_start_time / 1000, timezone.utc
-            )
+            new_cache_start_dt = timestamp2str(new_cache_start_time)
             new_date_str = new_cache_start_dt.strftime("%Y%m%d %H%M%S")
             new_cache_file = (
                 parent_dir / f"{symbol_norm}_{timeframe}_{new_date_str}.csv"
@@ -371,9 +445,9 @@ def _save_new_data_to_cache(
             save_ohlcv_to_file(new_cache_file, df)
             print(f"新获取的 done_data 已保存到缓存文件: {new_cache_file}")
         else:
-            print("警告：保存到缓存前发现数据不连续,跳过保存.")
+            print("检测到数据不连续,跳过保存缓存.")
     else:
-        print("尝试保存的 DataFrame 为空,跳过保存.")
+        print("检测到DataFrame为空,跳过保存缓存.")
 
 
 # --- 缓存处理逻辑 ---
@@ -423,42 +497,42 @@ async def handle_ohlcv_cache(
     tf_ms = TIMEFRAME_MS.get(timeframe)
     if not tf_ms:
         print(f"错误：未知的时间周期 '{timeframe}'")
-        return {"done_data": EMPTY_OHLCV_DF, "last_data": EMPTY_OHLCV_DF}
+        return {"done_data": EMPTY_OHLCV_DF.copy(), "last_data": EMPTY_OHLCV_DF.copy()}
 
     symbol_norm = symbol.replace("/", "_")  # 规范化交易对名称以便兼容文件系统
     parent_dir = Path(CACHE_DIR / mode / symbol_norm / timeframe)
     parent_dir.mkdir(parents=True, exist_ok=True)
     print(f"缓存文件目录: {parent_dir}")
 
-    original_since = since  # 记录原始请求的 since
-    original_limit = limit  # 记录原始请求的 limit
-    # print(f"原始请求参数: since={original_since}, limit={original_limit}")
+    # 检查 limit (应在尝试计算 since 之前完成)
+    if not isinstance(limit, int) or limit <= 0:
+        print(f"错误: 请求的 K 线数量 limit ({limit}) 必须是正整数.")
+        if since is None:
+            print("错误: limit 无效且 since 为 None, 无法继续.")
+            return {
+                "done_data": EMPTY_OHLCV_DF.copy(),
+                "last_data": EMPTY_OHLCV_DF.copy(),
+            }
+        print(f"错误: limit ({limit}) 无效，无法确定请求数量。")
+        return {"done_data": EMPTY_OHLCV_DF.copy(), "last_data": EMPTY_OHLCV_DF.copy()}
 
-    # 如果未提供 since,则根据 limit 确定默认值
+    # 如果 since 为 None，调用工具函数计算 (此时 limit 必定 > 0)
     if since is None:
-        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        if isinstance(limit, int) and limit > 0:
-            since = now_ms - (limit * tf_ms)
-            since = (since // tf_ms) * tf_ms
-            print(
-                f"由于 since 为 None, limit 为 {limit}, 计算得到的 since: {since} ({datetime.fromtimestamp(since / 1000, timezone.utc)})"
-            )
-        else:  # limit 是无效的或 <= 0
-            default_limit = 1000
-            print(
-                f"警告: 无效或非正数 limit '{limit}' 且 since=None.计算默认 {default_limit} 根 K 线的 since."
-            )
-            since = now_ms - (default_limit * tf_ms)
-            since = (since // tf_ms) * tf_ms
-        print(f"最终确定的起始时间 (since): {since}")
-    # else:
-    #     print(
-    #         f"使用提供的起始时间 (since): {since} ({datetime.fromtimestamp(since / 1000, timezone.utc)})"
-    #     )
-
-    print(
-        f"处理缓存 (最终参数): {symbol}, {timeframe}, since={since}, limit={original_limit}"
-    )
+        print(
+            f"handle_ohlcv_cache: since is None, 调用 calculate_default_since (limit={limit})."
+        )
+        # 使用 limit (即原始的 limit 参数) 进行计算
+        calculated_since = calculate_default_since(limit, timeframe)
+        if calculated_since is None:  # 理论上 timeframe 已检查
+            print(f"错误: 无法为时间周期 '{timeframe}' 计算默认 since.")
+            return {
+                "done_data": EMPTY_OHLCV_DF.copy(),
+                "last_data": EMPTY_OHLCV_DF.copy(),
+            }
+        since = calculated_since  # 更新 since 变量
+        print(
+            f"handle_ohlcv_cache: 计算得到的默认 since = {since} {timestamp2str(since)}"
+        )
 
     # --- 查找缓存文件 ---
     # print("开始查找相关的缓存文件...")
@@ -471,23 +545,12 @@ async def handle_ohlcv_cache(
                 parts = f.stem.split("_")
                 if len(parts) >= 3:
                     file_date_str = parts[-1]
-                    file_since_dt = datetime.strptime(
-                        file_date_str, "%Y%m%d %H%M%S"
-                    ).replace(tzinfo=timezone.utc)
+                    file_since_dt = str2datetime(file_date_str)
                     file_since_ms = int(file_since_dt.timestamp() * 1000)
 
                     # 检查缓存文件的开始时间是否小于等于用户请求的起始时间
                     if file_since_ms <= since:
                         valid_files.append((f, file_since_ms))
-                    #     print(
-                    #         f"缓存文件 {f.name} 的开始时间 ({datetime.fromtimestamp(file_since_ms / 1000, timezone.utc)}) 小于等于请求的起始时间,视为有效."
-                    #     )
-                    # else:
-                    #     print(
-                    #         f"跳过开始时间晚于请求的缓存文件: {f.name} ({datetime.fromtimestamp(file_since_ms / 1000, timezone.utc)} > {datetime.fromtimestamp(since / 1000, timezone.utc)})"
-                    #     )
-                    # else:
-                    #     print(f"跳过名称格式不符合预期的缓存文件: {f.name}")
             except ValueError:
                 print(f"无法从缓存文件名解析日期: {f.name}.跳过.")
             except Exception as e:
@@ -499,13 +562,13 @@ async def handle_ohlcv_cache(
 
     # --- 基于缓存可用性的逻辑 ---
     latest_cache_path = None
-    cached_done_data = EMPTY_OHLCV_DF
+    cached_done_data = EMPTY_OHLCV_DF.copy()
     cache_used = False  # 标记是否使用了缓存数据
 
     if valid_files:
         latest_cache_path, cache_start_ms = max(valid_files, key=lambda x: x[1])
         print(
-            f"选择最新的有效缓存: {latest_cache_path} (文件开始于 {datetime.fromtimestamp(cache_start_ms / 1000, timezone.utc)})"
+            f"选择最新的有效缓存: {latest_cache_path} (文件开始于 {timestamp2str(cache_start_ms)})"
         )
         cached_done_data = read_ohlcv_from_file(latest_cache_path)
 
@@ -513,23 +576,22 @@ async def handle_ohlcv_cache(
             cache_used = True
             print(f"缓存文件包含 {len(cached_done_data)} 行数据.")
             # 如果缓存中的数据量满足用户请求的 limit,则直接返回缓存数据
-            # 修改开始 >>>
             relevant_cache_data = cached_done_data[
                 cached_done_data["timestamp"] >= since
             ]
-            if len(relevant_cache_data) >= original_limit:
+            if len(relevant_cache_data) >= limit:
                 print(
-                    f"从请求时间{since}开始,缓存数据量 {len(relevant_cache_data)} 满足请求的 {original_limit} 根."
+                    f"从请求时间{since}开始,缓存数据量 {len(relevant_cache_data)} 满足请求的 {limit} 根."
                 )
                 return {
-                    "done_data": relevant_cache_data.head(original_limit).copy(),
-                    "last_data": EMPTY_OHLCV_DF,
+                    "done_data": relevant_cache_data.head(limit).copy(),
+                    "last_data": EMPTY_OHLCV_DF.copy(),
                 }
             else:
                 print(
-                    f"从请求时间开始{since},缓存数据量 ({len(relevant_cache_data)}) 不满足请求的 {original_limit} 根,需要获取更多数据."
+                    f"从请求时间开始{since},缓存数据量 ({len(relevant_cache_data)}) 不满足请求的 {limit} 根,需要获取更多数据."
                 )
-            # 修改结束 <<<
+
             # 检查缓存中最后一条数据的时间戳与用户请求起始时间之间是否存在较大的间隔
             last_cache_ts = cached_done_data["timestamp"].max()
             gap_ms = since - last_cache_ts if since > last_cache_ts else 0
@@ -537,13 +599,13 @@ async def handle_ohlcv_cache(
             if gap_ms > tf_ms:
                 print(f"检测到 {gap_ms / tf_ms:.2f} 个时间周期的空隙,视为缓存未命中.")
                 cache_used = False
-                cached_done_data = EMPTY_OHLCV_DF  # 重置缓存数据
+                cached_done_data = EMPTY_OHLCV_DF.copy()  # 重置缓存数据
             else:
                 # 计算需要从交易所获取的数据量和起始时间
                 fetch_since = last_cache_ts + tf_ms
-                fetch_limit = original_limit - len(relevant_cache_data)
+                fetch_limit = limit - len(relevant_cache_data)
                 print(
-                    f"从 {datetime.fromtimestamp(fetch_since / 1000, timezone.utc)} 开始获取 {fetch_limit} 根新数据."
+                    f"无空隙,正在从 {timestamp2str(fetch_since)} 开始获取 {fetch_limit} 根新数据."
                 )
                 exchange_data = await get_ohlcv_data_from_exchange(
                     exchange, symbol, timeframe, fetch_since, fetch_limit
@@ -563,20 +625,29 @@ async def handle_ohlcv_cache(
                     if _check_continuity(combined_done_data, timeframe):
                         save_ohlcv_to_file(latest_cache_path, combined_done_data)
                         print(f"缓存文件 {latest_cache_path} 已更新并合并了新数据.")
+                        relevant_cache_data = combined_done_data[
+                            combined_done_data["timestamp"] >= since
+                        ]
                         return {
-                            "done_data": combined_done_data.head(original_limit).copy(),
+                            "done_data": relevant_cache_data.head(limit).copy(),
                             "last_data": last_data,
                         }
                     else:
                         print("警告：合并后数据不连续,不更新缓存.")
+                        relevant_cache_data = cached_done_data[
+                            cached_done_data["timestamp"] >= since
+                        ]
                         return {
-                            "done_data": cached_done_data.head(original_limit).copy(),
+                            "done_data": relevant_cache_data.head(limit).copy(),
                             "last_data": last_data,  # 返回刚刚获取的 last_data
                         }
                 else:
                     print("获取新数据后 done_data 为空,返回缓存数据和last_data")
+                    relevant_cache_data = cached_done_data[
+                        cached_done_data["timestamp"] >= since
+                    ]
                     return {
-                        "done_data": cached_done_data.head(original_limit).copy(),
+                        "done_data": relevant_cache_data.head(limit).copy(),
                         "last_data": last_data,  # 没有done数据,也可能有last数据
                     }
         else:
@@ -587,7 +658,7 @@ async def handle_ohlcv_cache(
     if not cache_used:
         print("没有找到合适的缓存文件或缓存不满足条件,从交易所获取全新数据.")
         exchange_result = await get_ohlcv_data_from_exchange(
-            exchange, symbol, timeframe, since, original_limit
+            exchange, symbol, timeframe, since, limit
         )
         fetched_done_data = exchange_result["done_data"]
         fetched_last_data = exchange_result["last_data"]
@@ -597,4 +668,4 @@ async def handle_ohlcv_cache(
         return {"done_data": fetched_done_data, "last_data": fetched_last_data}
 
     # 理论上不应该执行到这里
-    return {"done_data": EMPTY_OHLCV_DF, "last_data": EMPTY_OHLCV_DF}
+    return {"done_data": EMPTY_OHLCV_DF.copy(), "last_data": EMPTY_OHLCV_DF.copy()}
